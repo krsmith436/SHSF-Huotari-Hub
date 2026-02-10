@@ -7,15 +7,15 @@ from guizero import App, PushButton, Text, Box
 import signal
 import sys
 import time
+from datetime import datetime
 
 # --- CONFIGURATION ---
 HM10_NODE = 7          # Position in devices.txt
 CHAR_HANDLE = 0        # HM-10 Serial Write Handle
 MQTT_BROKER = "localhost"
-# Use a wildcard '+' so we hear from everyone
-TOPIC_WILDCARD = "shsf/+/commands"
+TOPIC_WILDCARD = "shsf/+/commands" # Use a wildcard '+' so we hear from everyone
+TOPIC_HEARTBEAT = "shsf/heartbeat"
 GUI_SENDER = "hub"
-#TOPIC_RES = "shsf/responses"
 mqtt_sender = "Unknown"
 
 command_queue = queue.Queue()
@@ -87,6 +87,14 @@ def ble_worker():
     else:
         print("[BLE] Data characteristic FFE1 not found.")
 
+# --- HEARTBEAT ---
+def send_heartbeat():
+    # Using app.display(), so using guizero's internal timer with app.repeat()
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    # Publish a simple timestamp to let everyone know we are alive
+    mqtt_client.publish(TOPIC_HEARTBEAT, timestamp)
+
 # --- THE COMMAND PROCESSOR ---
 def process_command(payload, sender):
     """Handles commands from any source (MQTT or GUI)"""
@@ -106,8 +114,8 @@ def process_command(payload, sender):
 
 # --- MQTT SETUP ---
 def on_message(client, userdata, message):
-    payload = message.payload.decode("utf-8")
     topic = message.topic  # e.g., "home/r4/commands"
+    payload = message.payload.decode("utf-8")
     
     # Identify the sender by splitting the topic string
     # topic.split('/') results in ['home', 'sender', 'commands']
@@ -190,8 +198,10 @@ try:
 
     ble_thread = threading.Thread(target=ble_worker, daemon=True)
     ble_thread.start()
-
+    
+    app.repeat(10000, send_heartbeat) # Runs send_heartbeat every 10,000ms
     app.display() # This blocks until shutdown_system() calls app.destroy()
+    
     print("Script finished safely.")
     sys.exit(0)
 
