@@ -15,6 +15,7 @@ CHAR_HANDLE = 0        # HM-10 Serial Write Handle
 MQTT_BROKER = "localhost"
 TOPIC_WILDCARD = "shsf/+/commands" # Use a wildcard '+' so we hear from everyone
 TOPIC_HEARTBEAT = "shsf/heartbeat"
+TOPIC_RSSI = "shsf/giebel_throttle/rssi"
 GUI_SENDER = "hub"
 mqtt_sender = "Unknown"
 
@@ -67,10 +68,7 @@ def ble_worker():
         status_label.text_color = "green"
 
         # Register callback and enable notifications
-        print("")
-        print(f"Connect OK to LE server: {hm10_name}")
-        print("Enabling LE server notifications.")
-        print("")
+        print(f"[BLE] Connected to LE server: {hm10_name}")
         btfpy.Notify_ctic(HM10_NODE,CHAR_HANDLE,btfpy.NOTIFY_ENABLE,ble_callback)
         
         while running:
@@ -98,7 +96,6 @@ def send_heartbeat():
 # --- THE COMMAND PROCESSOR ---
 def process_command(payload, sender):
     """Handles commands from any source (MQTT or GUI)"""
-    print(f"Received command '{payload}' from '{sender}'")
     
     # Update global variable mqtt_sender for ble_callback
     global mqtt_sender
@@ -116,14 +113,31 @@ def process_command(payload, sender):
 def on_message(client, userdata, message):
     topic = message.topic  # e.g., "home/r4/commands"
     payload = message.payload.decode("utf-8")
-    
-    # Identify the sender by splitting the topic string
-    # topic.split('/') results in ['home', 'sender', 'commands']
-    parts = topic.split('/')
-    sender = parts[1] if len(parts) > 1 else "unknown"
 
-    # Route to the processor
-    process_command(payload, sender)    
+    if topic == TOPIC_RSSI:
+        try:
+            dbm = int(payload)
+            # Convert dBm to Percentage (-100 to -50 scale)
+            # -50 or better = 100%, -100 or worse = 0%
+            quality = 2 * (dbm + 100)
+            quality = max(0, min(100, quality)) # Keep between 0-100
+            
+            health_label.value = f"Giebel Throttle WiFi Signal: {quality}%"
+            
+            # Change color based on health
+            if quality > 75: health_label.text_color = "green"
+            elif quality > 40: health_label.text_color = "orange"
+            else: health_label.text_color = "red"
+        except:
+            pass
+    else:
+        # Identify the sender by splitting the topic string
+        # topic.split('/') results in ['home', 'sender', 'commands']
+        parts = topic.split('/')
+        sender = parts[1] if len(parts) > 1 else "unknown"
+
+        # Route to the processor
+        process_command(payload, sender)    
 
 mqtt_client = mqtt.Client()
 mqtt_client.on_message = on_message
@@ -134,7 +148,6 @@ def shutdown_system():
     global running
     print("\n[!] Shutting down system...")
     running = False              # Stops the BLE thread loop
-    # btfpy.disconnect()
     mqtt_client.loop_stop()      # Stops the MQTT background thread
     app.destroy()                # Closes the GUI window
     # sys.exit(0) is called automatically after app.display() ends
@@ -157,7 +170,7 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 # --- GUI ---
-app = App(title="SHSF - Pi Hub", width=400, height=280)
+app = App(title="SHSF - Pi Hub", width=400, height=400)
 # Spacer
 Text(app, "")
 
@@ -190,10 +203,17 @@ shutdown_btn = PushButton(app, text="SHUTDOWN PI", command=pi_shutdown, width=20
 shutdown_btn.bg = "black"
 shutdown_btn.text_color = "white"
 
+# Spacer
+Text(app, "")
+
+# Create a text label for WiFi signal strength
+health_label = Text(app, text="Signal: --%", color="gray")
+
 # --- START ---
 try:
     mqtt_client.connect(MQTT_BROKER, 1883)
     mqtt_client.subscribe(TOPIC_WILDCARD)
+    mqtt_client.subscribe(TOPIC_RSSI)
     mqtt_client.loop_start()
 
     ble_thread = threading.Thread(target=ble_worker, daemon=True)
