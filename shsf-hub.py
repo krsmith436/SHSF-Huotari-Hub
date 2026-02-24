@@ -28,6 +28,7 @@ def ble_callback(HM10_NODE, CHAR_HANDLE, data, datalen):
     # 'data' arrives as a list of bytes
     message = "".join(chr(b) for b in data).strip()
     print(f"[BLE] Received: {message}")
+    add_to_log(f"[BLE] Received: {message}")
 
     # Manage the response
     if mqtt_sender == GUI_SENDER:
@@ -44,13 +45,17 @@ def ble_worker():
     global running
     global hm10_name
     print("[BLE] Initializing ...")
+    add_to_log("[BLE] Initializing ...")
     if btfpy.Init_blue("devices.txt") != 1:
         print("[BLE] Failed to initialize.")
+        add_to_log("[BLE] Failed to initialize.")
         return
 
     print(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
+    add_to_log(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
     if (btfpy.Connect_node(HM10_NODE,btfpy.CHANNEL_LE,0) == 0):
         print("[BLE] Failed to connect.")
+        add_to_log("[BLE] Failed to connect.")
         return
         
     if(btfpy.Ctic_ok(HM10_NODE,CHAR_HANDLE) == 1):
@@ -69,6 +74,7 @@ def ble_worker():
 
         # Register callback and enable notifications
         print(f"[BLE] Connected to LE server: {hm10_name}")
+        add_to_log(f"[BLE] Connected to LE server: {hm10_name}")
         btfpy.Notify_ctic(HM10_NODE,CHAR_HANDLE,btfpy.NOTIFY_ENABLE,ble_callback)
         
         while running:
@@ -76,6 +82,7 @@ def ble_worker():
                 # Get command from GUI or MQTT
                 cmd = command_queue.get(timeout=0.1)
                 print(f"[BLE] Sending: {cmd}")
+                add_to_log(f"[BLE] Sending: {cmd}")
                 btfpy.Write_ctic(HM10_NODE,CHAR_HANDLE,cmd + "\r",0)
                 btfpy.Read_notify(100)
                 command_queue.task_done()
@@ -84,6 +91,7 @@ def ble_worker():
                 btfpy.Sleep_ms(50) 
     else:
         print("[BLE] Data characteristic FFE1 not found.")
+        add_to_log("[BLE] Data characteristic FFE1 not found.")
 
 # --- HEARTBEAT ---
 def send_heartbeat():
@@ -128,6 +136,9 @@ def on_message(client, userdata, message):
             if quality > 75: health_label.text_color = "green"
             elif quality > 40: health_label.text_color = "orange"
             else: health_label.text_color = "red"
+
+            # Log RSSI if the signal gets too low
+            if quality <= 75: add_to_log("Warning: R4 signal is weak!")
         except:
             pass
     else:
@@ -147,6 +158,7 @@ def shutdown_system():
     """Cleans up all processes and exits the script."""
     global running
     print("\n[!] Shutting down system...")
+    add_to_log("\n[!] Shutting down system...")
     running = False              # Stops the BLE thread loop
     mqtt_client.loop_stop()      # Stops the MQTT background thread
     app.destroy()                # Closes the GUI window
@@ -156,6 +168,7 @@ def shutdown_system():
 def pi_shutdown():
     if app.yesno("Shutdown", "Are you sure you want to shut down the Pi?"):
         print("Shutting down Pi...")
+        add_to_log("Shutting down Pi...")
         # Clean up before hardware off
         global running
         running = False
@@ -169,8 +182,21 @@ def signal_handler(signum, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
+# --- LOG HELPER FUNCTION ---
+def add_to_log(message):
+    """Adds a timestamped message to the GUI log window."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    new_entry = f"[{timestamp}] {message}\n"
+    
+    # Prepend the new text at the top (or append to bottom)
+    # We'll append to the bottom for a traditional log feel
+    log_window.append(new_entry)
+    
+    # Auto-scroll to the bottom
+    # (In guizero/tkinter, this happens automatically when appending)
+
 # --- GUI ---
-app = App(title="SHSF - Pi Hub", width=400, height=400)
+app = App(title="SHSF - Pi Hub", width=450, height=500)
 # Spacer
 Text(app, "")
 
@@ -208,6 +234,12 @@ Text(app, "")
 
 # Create a text label for WiFi signal strength
 health_label = Text(app, text="Signal: --%", color="gray")
+
+# Create the log window
+Text(app, "System Event Log:", size=10, align="left")
+log_window = TextBox(app, width="fill", height=10, multiline=True, scrollbar=True)
+log_window.text_size = 8
+log_window.bg = "#f0f0f0" # Light gray background
 
 # --- START ---
 try:
