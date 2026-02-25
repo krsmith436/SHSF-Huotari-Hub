@@ -3,7 +3,7 @@ import btfpy
 import threading
 import queue
 import paho.mqtt.client as mqtt
-from guizero import App, PushButton, Text, Box
+from guizero import App, PushButton, Text, Box, TextBox
 import signal
 import sys
 import time
@@ -104,6 +104,8 @@ def send_heartbeat():
 # --- THE COMMAND PROCESSOR ---
 def process_command(payload, sender):
     """Handles commands from any source (MQTT or GUI)"""
+
+    add_to_log(f"[MQTT] Command '{payload}' from {sender}")
     
     # Update global variable mqtt_sender for ble_callback
     global mqtt_sender
@@ -138,7 +140,7 @@ def on_message(client, userdata, message):
             else: health_label.text_color = "red"
 
             # Log RSSI if the signal gets too low
-            if quality <= 75: add_to_log("Warning: R4 signal is weak!")
+            if quality <= 75: add_to_log("[WIFI] Giebel Throttle signal is weak!")
         except:
             pass
     else:
@@ -167,8 +169,8 @@ def shutdown_system():
 # --- SHUTDOWN FUNCTION ---
 def pi_shutdown():
     if app.yesno("Shutdown", "Are you sure you want to shut down the Pi?"):
-        print("Shutting down Pi...")
-        add_to_log("Shutting down Pi...")
+        print("\n[!] Shutting down Pi...")
+        add_to_log("\n[!] Shutting down Pi...")
         # Clean up before hardware off
         global running
         running = False
@@ -186,7 +188,7 @@ signal.signal(signal.SIGINT, signal_handler)
 def add_to_log(message):
     """Adds a timestamped message to the GUI log window."""
     timestamp = datetime.now().strftime("%H:%M:%S")
-    new_entry = f"[{timestamp}] {message}\n"
+    new_entry = f"[{timestamp}] {message}"
     
     # Prepend the new text at the top (or append to bottom)
     # We'll append to the bottom for a traditional log feel
@@ -194,6 +196,11 @@ def add_to_log(message):
     
     # Auto-scroll to the bottom
     # (In guizero/tkinter, this happens automatically when appending)
+
+# --- CLEAR LOG FUNCTION ---
+def clear_log():
+    log_window.clear()
+    add_to_log("Log cleared.")
 
 # --- GUI ---
 app = App(title="SHSF - Pi Hub", width=450, height=500)
@@ -236,16 +243,24 @@ Text(app, "")
 health_label = Text(app, text="Signal: --%", color="gray")
 
 # Create the log window
-Text(app, "System Event Log:", size=10, align="left")
 log_window = TextBox(app, width="fill", height=10, multiline=True, scrollbar=True)
 log_window.text_size = 8
 log_window.bg = "#f0f0f0" # Light gray background
 
+# CLear log window
+PushButton(app, text="Clear Log", command=clear_log, align="left")
+
 # --- START ---
 try:
     mqtt_client.connect(MQTT_BROKER, 1883)
+    # update_status("[MQTT] Connected to Broker!", "green")
+
     mqtt_client.subscribe(TOPIC_WILDCARD)
+    add_to_log(f"[MQTT] Subscribed to: {TOPIC_WILDCARD}")
+
     mqtt_client.subscribe(TOPIC_RSSI)
+    add_to_log(f"[MQTT] Subscribed to: {TOPIC_RSSI}")
+
     mqtt_client.loop_start()
 
     ble_thread = threading.Thread(target=ble_worker, daemon=True)
@@ -258,5 +273,6 @@ try:
     sys.exit(0)
 
 except Exception as e:
-    print(f"Main Loop Error: {e}")
+    print(f"\n[!] Main Loop Error: {e}")
+    add_to_log(f"\n[!] Main Loop Error: {e}")
     shutdown_system()
