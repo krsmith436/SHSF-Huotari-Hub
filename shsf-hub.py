@@ -205,7 +205,7 @@ app = App(title="SHSF - Pi Hub", width=500, height=600)
 # Spacer
 Text(app, "")
 
-Text(app, text="Smith Huotari & Santa Fe Railroad", font="Times New Roman", size=24, color="green")
+Text(app, text="Smith Huotari & Santa Fe Railroad", font="Times New Roman", size=24, color="green", style="bold")
 
 # Spacer
 Text(app, "")
