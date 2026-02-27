@@ -31,11 +31,7 @@ def ble_callback(HM10_NODE, CHAR_HANDLE, data, datalen):
     add_to_log(f"[BLE] Received: {message}")
 
     # Manage the response
-    if mqtt_sender == GUI_SENDER:
-        # Update GUI
-        status_label.value = f"{hm10_name} Status: {message}"
-        status_label.text_color = "green"
-    else:
+    if mqtt_sender != GUI_SENDER:
         # Forward to sender via MQTT
         topic = f"shsf/{mqtt_sender}/responses"
         mqtt_client.publish(topic, message)
@@ -69,8 +65,7 @@ def ble_worker():
             hm10_name = str(raw_name).strip()
 
         # 3. Update the GUI label directly
-        status_label.value = f"{hm10_name} Status: Connected"
-        status_label.text_color = "green"
+        update_status(f"{hm10_name} Status: Connected", "green")
 
         # Register callback and enable notifications
         print(f"[BLE] Connected to LE server: {hm10_name}")
@@ -112,9 +107,7 @@ def process_command(payload, sender):
     mqtt_sender = sender
     
     # Update the GUI label to show identity
-    if sender == GUI_SENDER:
-        status_label.value = f"Last Cmd: {payload} (from {sender})"
-        status_label.text_color = "blue"
+    update_status(f"Last Cmd: {payload} (from {sender})", "blue")
 
     # Send to the BLE queue for the Nano
     command_queue.put(payload)
@@ -202,18 +195,28 @@ def clear_log():
     log_window.clear()
     add_to_log("Log cleared.")
 
+# --- UPDATE STATUS INDICATOR ---
+def update_status(message, color):
+    status_label.value = message
+    status_label.text_color = color
+
 # --- GUI ---
-app = App(title="SHSF - Pi Hub", width=450, height=500)
+app = App(title="SHSF - Pi Hub", width=500, height=600)
 # Spacer
 Text(app, "")
 
-Text(app, "System Bridge Active", size=14, color="green")
+Text(app, text="Smith Huotari & Santa Fe Railroad", font="Times New Roman", size=24, color="green", style="bold")
 
 # Spacer
 Text(app, "")
 
-# Initialize with a placeholder, set in ble_worker
-status_label = Text(app, text="Searching for Device...", color="orange")
+# Status bar, initialize for ble_worker
+status_box = Box(app, width="fill", height=30, border=True)
+Text(status_box, text="  [Status] ", align="left", size=10)
+status_label = Text(status_box, text="Searching for Device...", align="left", color="orange", size=10)
+
+# Spacer
+Text(app, "")
 
 # Container for control buttons
 button_box = Box(app, layout="grid")
