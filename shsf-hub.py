@@ -21,6 +21,7 @@ mqtt_sender = "Unknown"
 
 command_queue = queue.Queue()
 running = True
+ble_connected = False  # The missing flag!
 hm10_name = "Unknown Device"
 
 # --- BLE CALLBACK (Nano -> Pi) ---
@@ -38,8 +39,8 @@ def ble_callback(HM10_NODE, CHAR_HANDLE, data, datalen):
 
 # --- BLE WORKER THREAD ---
 def ble_worker():
-    global running
-    global hm10_name
+    global running, hm10_name, ble_connected
+
     print("[BLE] Initializing ...")
     add_to_log("[BLE] Initializing ...")
     if btfpy.Init_blue("devices.txt") != 1:
@@ -47,53 +48,90 @@ def ble_worker():
         add_to_log("[BLE] Failed to initialize.")
         return
 
-    print(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
-    add_to_log(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
-    if (btfpy.Connect_node(HM10_NODE,btfpy.CHANNEL_LE,0) == 0):
-        print("[BLE] Failed to connect.")
-        add_to_log("[BLE] Failed to connect.")
-        return
-        
-    if(btfpy.Ctic_ok(HM10_NODE,CHAR_HANDLE) == 1):
-        # 1. Fetch the name from the module
-        raw_name = btfpy.Device_name(HM10_NODE)
-        
-        # 2. Convert to string (handling potential byte-list format)
-        if isinstance(raw_name, list):
-            hm10_name = "".join(chr(b) for b in raw_name).strip()
+    while running:
+        ble_connected = False # Ensure it's False while searching
+
+        update_status(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...", "orange")
+        print(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
+        add_to_log(f"[BLE] Connecting to HM-10 (Node {HM10_NODE})...")
+
+        if (btfpy.Connect_node(HM10_NODE,btfpy.CHANNEL_LE,0) == 1):
+            # --- SUCCESSFUL CONNECTION ---
+            ble_connected = True # Set to True once connection is solid
+            print("[BLE] Connected successfully!")
+            add_to_log("[BLE] Connected successfully!")
+            
+            if(btfpy.Ctic_ok(HM10_NODE,CHAR_HANDLE) == 1):
+                # 1. Fetch the name from the module
+                raw_name = btfpy.Device_name(HM10_NODE)
+                
+                # 2. Convert to string (handling potential byte-list format)
+                if isinstance(raw_name, list):
+                    hm10_name = "".join(chr(b) for b in raw_name).strip()
+                else:
+                    hm10_name = str(raw_name).strip()
+
+                # 3. Update the GUI label
+                update_status(f"[BLE] {hm10_name} Connected!", "green")
+
+                # Register callback and enable notifications
+                print(f"[BLE] Connected to LE server: {hm10_name}")
+                add_to_log(f"[BLE] Connected to LE server: {hm10_name}")
+                btfpy.Notify_ctic(HM10_NODE,CHAR_HANDLE,btfpy.NOTIFY_ENABLE,ble_callback)
+                
+                # --- INTERNAL DATA LOOP ---
+                while running:
+                    try:
+                        # 1. Check for outgoing commands from MQTT/GUI
+                        try:
+                            # Get command from GUI or MQTT
+                            cmd = command_queue.get_nowait()
+                            print(f"[BLE] Sending: {cmd}")
+                            add_to_log(f"[BLE] Sending: {cmd}")
+                            bytes_written = btfpy.Write_ctic(HM10_NODE,CHAR_HANDLE,cmd + "\r",0)
+                            if bytes_written > 0:
+                                # Success!
+                                btfpy.Read_notify(100)
+                                command_queue.task_done()
+                            else:
+                                # If 0 bytes were written, the connection is likely lost.
+                                raise ConnectionError("[BLE] Write failed.")
+                        except queue.Empty:
+                            pass
+
+                        time.sleep(0.05) # CPU breathing room 
+
+                    except Exception as e:
+                        ble_connected = False # Set back to False on crash
+                        add_to_log(f"[BLE] Connection lost ({e})")
+                        update_status(f"[BLE] Connection lost ({e})", "red")
+                        break # Break internal loop to trigger retry
+
+            else:
+                print("[BLE] Data characteristic FFE1 not found.")
+                add_to_log("[BLE] Data characteristic FFE1 not found.")
+                update_status(f"[BLE] LECHAR FFE1 not found.", "red")
+
         else:
-            hm10_name = str(raw_name).strip()
+            # --- CONNECTION FAILED ---
+            ble_connected = False
+            print("[BLE] Failed to connect.")
+            add_to_log("[BLE] Failed to connect.")
+            update_status("[BLE] Failed to connect.", "red")
 
-        # 3. Update the GUI label directly
-        update_status(f"{hm10_name} Status: Connected", "green")
+            # Wait 5 seconds before trying again to avoid spamming the radio
+            for _ in range(50): # Check 'running' flag every 0.1s during the 5s wait
+                if not running: break
+                time.sleep(0.1)
 
-        # Register callback and enable notifications
-        print(f"[BLE] Connected to LE server: {hm10_name}")
-        add_to_log(f"[BLE] Connected to LE server: {hm10_name}")
-        btfpy.Notify_ctic(HM10_NODE,CHAR_HANDLE,btfpy.NOTIFY_ENABLE,ble_callback)
-        
-        while running:
-            try:
-                # Get command from GUI or MQTT
-                cmd = command_queue.get(timeout=0.1)
-                print(f"[BLE] Sending: {cmd}")
-                add_to_log(f"[BLE] Sending: {cmd}")
-                btfpy.Write_ctic(HM10_NODE,CHAR_HANDLE,cmd + "\r",0)
-                btfpy.Read_notify(100)
-                command_queue.task_done()
-            except queue.Empty:
-                # Essential: allows btfpy to process incoming data packets
-                btfpy.Sleep_ms(50) 
-    else:
-        print("[BLE] Data characteristic FFE1 not found.")
-        add_to_log("[BLE] Data characteristic FFE1 not found.")
+    add_to_log("[BLE] Thread shutting down.")
 
-# --- HEARTBEAT ---
-def send_heartbeat():
-    # Using app.display(), so using guizero's internal timer with app.repeat()
-    timestamp = datetime.now().strftime("%H:%M:%S")
+# --- REPEATED TASKS ---
+def repeat_tasks():
+    # Guizero's app.display() has an internal timer with app.repeat(), set just before app.display().
     
-    # Publish a simple timestamp to let everyone know we are alive
+    # Publish a simple timestamp (heart beat) to let everyone know we are alive
+    timestamp = datetime.now().strftime("%H:%M:%S")
     mqtt_client.publish(TOPIC_HEARTBEAT, timestamp)
 
 # --- THE COMMAND PROCESSOR ---
@@ -201,11 +239,11 @@ def update_status(message, color):
     status_label.text_color = color
 
 # --- GUI ---
-app = App(title="SHSF - Pi Hub", width=500, height=600)
+app = App(title="SHSF - Pi Hub", width=500, height=410)
 # Spacer
 Text(app, "")
 
-Text(app, text="Smith Huotari & Santa Fe Railroad", font="Times New Roman", size=24, color="green", style="bold")
+Text(app, text="Smith Huotari & Santa Fe Railroad", font="Times New Roman", size=24, color="green")
 
 # Spacer
 Text(app, "")
@@ -213,7 +251,7 @@ Text(app, "")
 # Status bar, initialize for ble_worker
 status_box = Box(app, width="fill", height=30, border=True)
 Text(status_box, text="  [Status] ", align="left", size=10)
-status_label = Text(status_box, text="Searching for Device...", align="left", color="orange", size=10)
+status_label = Text(status_box, text="[BLE] Searching for Device...", align="left", color="orange", size=10)
 
 # Spacer
 Text(app, "")
@@ -221,37 +259,37 @@ Text(app, "")
 # Container for control buttons
 button_box = Box(app, layout="grid")
 PushButton(button_box, text="Horn", grid=[0,0], command=lambda: process_command("h", GUI_SENDER))
-PushButton(button_box, text="All Blocks ON", grid=[1,0], command=lambda: process_command("ba o", GUI_SENDER))
-
-# Spacer
-Text(app, "")
-
-# The Exit Button
-exit_button = PushButton(app, text="EXIT SYSTEM", command=shutdown_system, width=20)
-exit_button.bg = "red"
-exit_button.text_color = "white"
-
-# Spacer
-Text(app, "")
-
-# The Pi Shutdown button
-shutdown_btn = PushButton(app, text="SHUTDOWN PI", command=pi_shutdown, width=20)
-shutdown_btn.bg = "black"
-shutdown_btn.text_color = "white"
+Text(button_box, text=" ", grid=[1,0]) # spacer
+PushButton(button_box, text="All Blocks ON", grid=[2,0], command=lambda: process_command("ba o", GUI_SENDER))
 
 # Spacer
 Text(app, "")
 
 # Create a text label for WiFi signal strength
-health_label = Text(app, text="Signal: --%", color="gray")
+health_label = Text(app, text="Giebel Throttle WiFi Signal: --%", color="gray")
 
 # Create the log window
 log_window = TextBox(app, width="fill", height=10, multiline=True, scrollbar=True)
 log_window.text_size = 8
 log_window.bg = "#f0f0f0" # Light gray background
 
-# CLear log window
-PushButton(app, text="Clear Log", command=clear_log, align="left")
+# Container for system buttons
+system_button_box = Box(app, layout="grid")
+
+# CLear Log window button
+clear_log_button = PushButton(system_button_box, text="Clear Log", grid=[0,0], command=clear_log)
+Text(system_button_box, text="               ", grid=[1,0]) # spacer
+
+# The Exit Button
+exit_button = PushButton(system_button_box, text="EXIT SYSTEM", grid=[2,0], command=shutdown_system)
+exit_button.bg = "red"
+exit_button.text_color = "white"
+Text(system_button_box, text="  ", grid=[3,0]) # spacer
+
+# The Pi Shutdown button
+shutdown_btn = PushButton(system_button_box, text="SHUTDOWN PI", grid=[4,0], command=pi_shutdown) # , width=20
+shutdown_btn.bg = "black"
+shutdown_btn.text_color = "white"
 
 # --- START ---
 try:
@@ -269,7 +307,7 @@ try:
     ble_thread = threading.Thread(target=ble_worker, daemon=True)
     ble_thread.start()
     
-    app.repeat(10000, send_heartbeat) # Runs send_heartbeat every 10,000ms
+    app.repeat(10000, repeat_tasks) # Runs repeat_tasks every 10,000ms
     app.display() # This blocks until shutdown_system() calls app.destroy()
     
     print("Script finished safely.")
