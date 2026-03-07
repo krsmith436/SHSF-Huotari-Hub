@@ -58,8 +58,8 @@ def ble_worker():
         if (btfpy.Connect_node(HM10_NODE,btfpy.CHANNEL_LE,0) == 1):
             # --- SUCCESSFUL CONNECTION ---
             ble_connected = True # Set to True once connection is solid
-            print("[BLE] Connected successfully!")
-            add_to_log("[BLE] Connected successfully!")
+            print("[BLE] Connected successfully")
+            add_to_log("[BLE] Connected successfully")
             
             if(btfpy.Ctic_ok(HM10_NODE,CHAR_HANDLE) == 1):
                 # 1. Fetch the name from the module
@@ -72,7 +72,7 @@ def ble_worker():
                     hm10_name = str(raw_name).strip()
 
                 # 3. Update the GUI label
-                update_status(f"[BLE] {hm10_name} Connected!", "green")
+                update_status(f"[BLE] {hm10_name} Connected", "green")
 
                 # Register callback and enable notifications
                 print(f"[BLE] Connected to LE server: {hm10_name}")
@@ -108,15 +108,15 @@ def ble_worker():
                         break # Break internal loop to trigger retry
 
             else:
-                print("[BLE] Data characteristic FFE1 not found.")
-                add_to_log("[BLE] Data characteristic FFE1 not found.")
-                update_status(f"[BLE] LECHAR FFE1 not found.", "red")
+                print("[BLE] Data characteristic FFE1 not found")
+                add_to_log("[BLE] Data characteristic FFE1 not found")
+                update_status(f"[BLE] LECHAR FFE1 not found", "red")
 
         else:
             # --- CONNECTION FAILED ---
             ble_connected = False
-            print("[BLE] Failed to connect.")
-            add_to_log("[BLE] Failed to connect.")
+            print("[BLE] Connection failed")
+            add_to_log("[BLE] Connection failed")
             update_status("[BLE] Failed to connect.", "red")
 
             # Wait 5 seconds before trying again to avoid spamming the radio
@@ -138,7 +138,7 @@ def repeat_tasks():
 def process_command(payload, sender):
     """Handles commands from any source (MQTT or GUI)"""
 
-    add_to_log(f"[MQTT] Command '{payload}' from {sender}")
+    add_to_log(f"[CMDPROC] Command '{payload}' from {sender}")
     
     # Update global variable mqtt_sender for ble_callback
     global mqtt_sender
@@ -171,7 +171,7 @@ def on_message(client, userdata, message):
             else: health_label.text_color = "red"
 
             # Log RSSI if the signal gets too low
-            if quality <= 75: add_to_log("[WIFI] Giebel Throttle signal is weak!")
+            if quality <= 75: add_to_log(f"[WIFI] Giebel Throttle signal is weak: {quality}%")
         except:
             pass
     else:
@@ -183,8 +183,30 @@ def on_message(client, userdata, message):
         # Route to the processor
         process_command(payload, sender)    
 
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        add_to_log("[MQTT] Connected to Broker")
+        update_status("[MQTT] Connected to Broker", "green")
+        
+        mqtt_client.subscribe(TOPIC_WILDCARD)
+        add_to_log(f"[MQTT] Subscribed to: {TOPIC_WILDCARD}")
+
+        mqtt_client.subscribe(TOPIC_RSSI)
+        add_to_log(f"[MQTT] Subscribed to: {TOPIC_RSSI}")
+    else:
+        add_to_log(f"[MQTT] Connection failed (Code {rc})")
+        
+        update_status("[MQTT] Connection Error", "red")
+
+def on_disconnect(client, userdata, rc):
+    add_to_log("[MQTT] Disconnected from Broker")
+    update_status("[MQTT] Offline (Retrying...)", "orange")
+    # Note: loop_start() handles the actual reconnection logic automatically!
+
 mqtt_client = mqtt.Client()
 mqtt_client.on_message = on_message
+mqtt_client.on_connect = on_connect
+mqtt_client.on_disconnect = on_disconnect
 
 # --- EXIT FUNCTION ---
 def shutdown_system():
@@ -194,6 +216,7 @@ def shutdown_system():
     add_to_log("\n[!] Shutting down system...")
     running = False              # Stops the BLE thread loop
     mqtt_client.loop_stop()      # Stops the MQTT background thread
+    mqtt_client.disconnect()     # Cleanly tells the broker we're leaving
     app.destroy()                # Closes the GUI window
     # sys.exit(0) is called automatically after app.display() ends
 
@@ -206,6 +229,7 @@ def pi_shutdown():
         global running
         running = False
         mqtt_client.loop_stop()
+        mqtt_client.disconnect()
         # Trigger the system shutdown command
         os.system("sudo shutdown -h now")
 
@@ -293,19 +317,18 @@ shutdown_btn.text_color = "white"
 
 # --- START ---
 try:
-    mqtt_client.connect(MQTT_BROKER, 1883)
-    # update_status("[MQTT] Connected to Broker!", "green")
-
-    mqtt_client.subscribe(TOPIC_WILDCARD)
-    add_to_log(f"[MQTT] Subscribed to: {TOPIC_WILDCARD}")
-
-    mqtt_client.subscribe(TOPIC_RSSI)
-    add_to_log(f"[MQTT] Subscribed to: {TOPIC_RSSI}")
-
-    mqtt_client.loop_start()
-
     ble_thread = threading.Thread(target=ble_worker, daemon=True)
     ble_thread.start()
+
+    # connect_async doesn't block. It will just start trying in the background.
+    try:
+        mqtt_client.connect_async("localhost", 1883, 60)
+        mqtt_client.loop_start() # This starts the background thread that handles retries
+        add_to_log("[MQTT] Background connection thread started")
+    except Exception as e:
+        add_to_log(f"[MQTT] Could not start thread: {e}")
+
+
     
     app.repeat(10000, repeat_tasks) # Runs repeat_tasks every 10,000ms
     app.display() # This blocks until shutdown_system() calls app.destroy()
